@@ -1,0 +1,153 @@
+-------STAGE TABLE CREATION FOR LOADING FILE_DATA
+create or replace TABLE COVID_DATA.STAGE.FILE_DATA (
+	STATE VARCHAR(500),
+	COUNTRY VARCHAR(500),
+	LAT VARCHAR(500),
+	LONG VARCHAR(500),
+	DATE VARCHAR(500),
+	CONFIRMED VARCHAR(100),
+	DEATHS VARCHAR(100),
+	RECOVERED VARCHAR(100),
+	ACTIVE VARCHAR(100),
+	WHO_REGION VARCHAR(500)
+);
+
+-------CREATE FILE_FORMAT FOR THE COVID FILE
+
+create file format covid_data
+field_delimiter = ','
+skip_header = 1
+type = 'csv'
+
+-------CREATING INTERNAL STAGE TO LOAD THE FILE FROM LOCAL DIRECTORY USING SNOWFLAKE UI
+
+create or replace stage covid_data
+file_format = 'covid_data'
+
+-------CREATING SNOWPIPE(**Not in use**)
+create or replace pipe covid_data_pipe
+-- auto_ingest = TRUE
+as
+    copy into file_data
+    from @covid_data
+
+-----------SP TO TRUNCATE AND INSERT SOURCE(FILE) DATA
+create or replace procedure staging_ins()
+returns string null
+language sql
+AS
+$$
+BEGIN
+    TRY
+    TRUNCATE TABLE COVID_DATA.STAGE.FILE_DATA;
+
+    COPY INTO COVID_DATA.STAGE.FILE_DATA
+    FROM (SELECT $1,	$2,	$3,	$4,	TO_DATE($5,'DD-MM-YYYY'),	$6,	$7,	$8,	$9,	$10 FROM @covid_data);
+END;
+$$;
+
+call staging_ins();
+----------------
+
+------------------TRUNCATE STAGING TABLES
+CREATE OR REPLACE PROCEDURE TRUNCATE_STAGING_TABLES()
+RETURNS VARCHAR NULL
+LANGUAGE SQL
+AS
+$$
+BEGIN
+    TRUNCATE TABLE COVID_DATA.STAGE.COUNTRY_DIM;
+    TRUNCATE TABLE COVID_DATA.STAGE.STATE_DIM;
+    TRUNCATE TABLE COVID_DATA.STAGE.WHO_DIM;
+END
+$$
+
+CALL TRUNCATE_STAGING_TABLES();
+-------------------
+
+-------------------SP TO PERFORM A LOOKUP WITH THE STAGING DATA AND INSERT WHAT IS NOT PRESENT IN THE DIMENSION TABLE
+create or replace procedure lkp_ins_dim_data()
+returns varchar(10) null
+language sql
+as
+$$
+begin
+    --COUNTRY_TABLE
+    INSERT INTO COVID_DATA.COVID_DATASET_2019.COUNTRY_DIM(COUNTRY_NAME)
+        SELECT CD.COUNTRY_NAME FROM COVID_DATA.STAGE.COUNTRY_DIM CD
+        LEFT JOIN COVID_DATA.COVID_DATASET_2019.COUNTRY_DIM CCD
+        ON CCD.COUNTRY_NAME = CD.COUNTRY_NAME
+        WHERE CCD.COUNTRY_NAME IS NULL;
+        
+    --WHO TABLE
+    INSERT INTO COVID_DATA.COVID_DATASET_2019.WHO_DIM(REGION_NAME)
+        SELECT WD.REGION_NAME FROM COVID_DATA.STAGE.WHO_DIM WD
+        LEFT JOIN COVID_DATA.COVID_DATASET_2019.WHO_DIM CWD
+        ON CWD.REGION_NAME = WD.REGION_NAME
+        WHERE CWD.REGION_NAME IS NULL;
+
+    --STATE TABLE
+    INSERT INTO COVID_DATA.COVID_DATASET_2019.STATE_DIM(REGION_NAME,LAT,LON)
+        SELECT sd.REGION_NAME,sd.LAT,sd.LON FROM COVID_DATA.STAGE.STATE_DIM SD
+        LEFT JOIN COVID_DATA.COVID_DATASET_2019.STATE_DIM CSD 
+        ON CSD.REGION_NAME = SD.REGION_NAME
+        AND CSD.LAT = CAST(SD.LAT AS NUMERIC(38,9))
+        AND CSD.LON = CAST(SD.LON AS NUMERIC(38,9))
+        WHERE CSD.REGION_NAME IS NULL;
+        
+end;
+$$;
+
+call lkp_ins_dim_data();
+
+-----------------SP TO INSERT DATE INTO DATE_DIM TABLE *****THIS SHOULD BE AN YEARLY EXECUTION(EXECUTE AS PER THE REQUIREMENT)******
+CREATE OR REPLACE PROCEDURE ins_date(START_DATE DATE,END_DATE DATE)
+RETURNS TABLE() NULL
+LANGUAGE SQL
+AS
+$$
+    DECLARE DATE_VAL INTEGER;
+    RES RESULTSET;
+BEGIN    
+    DATE_VAL := datediff(day,START_DATE,END_DATE)+1;
+    IF (NOT EXISTS (SELECT 1 FROM DATE_DIM WHERE DATE BETWEEN CAST(:START_DATE AS DATE) AND CAST(:END_DATE AS DATE))) THEN
+        INSERT INTO DATE_DIM(DATE,MONTH,DAY,YEAR,MONTH_NUMBER,DAY_NUMBER)
+            SELECT DATE,MONTHNAME(DATE),DAYNAME(DATE),YEAR(DATE) ,MONTH(DATE),DAY(DATE) 
+            FROM(
+            select DATEADD(DAY,SEQ4(),:START_DATE) AS DATE from table(generator(rowcount => :DATE_VAL))
+            ) DATE;
+    END IF; 
+    RES := (SELECT * FROM DATE_DIM WHERE DATE BETWEEN :START_DATE AND :END_DATE);
+    RETURN TABLE(RES);
+END; 
+$$;
+
+CALL ins_date(START_DATE => '2021-01-01',END_DATE =>'2021-12-31');
+
+-------------------
+
+------------------Final insertion into the Fact Table after all the dimension table insertions and Lookup's
+
+CREATE OR REPLACE PROCEDURE ins_fact_table()
+returns varchar null
+language sql
+as 
+$$
+begin
+insert into covid_data.covid_dataset_2019.cases_data_fact(COUNTRY_ID,STATE_ID,WREGION_ID,DATE_ID,CONFIRMED,DEATHS,RECOVERED) select cd.country_id,sd.state_id,wd.wregion_id,dm.date_id,CAST(fd.confirmed AS INT),CAST(fd.deaths AS INT),CAST(fd.recovered AS INT) from covid_data.stage.file_data fd left join covid_data.covid_dataset_2019.date_dim dm on dm.date = CAST(fd.date AS DATE) left join covid_data.covid_dataset_2019.country_dim cd on cd.country_name = REPLACE(fd.country,'*','') left join covid_data.covid_dataset_2019.state_dim sd on sd.region_name = fd.state left join covid_data.covid_dataset_2019.who_dim wd on wd.region_name = fd.who_region left join covid_data.covid_dataset_2019.cases_data_fact cccd on cccd.country_id = cd.country_id and cccd.date_id = dm.date_id and cccd.wregion_id = wd.wregion_id and coalesce(cccd.state_id,0) = coalesce(sd.state_id,0) and cccd.confirmed = CAST(fd.confirmed AS INT) and cccd.deaths = CAST(fd.deaths AS INT) and cccd.recovered = CAST(fd.recovered AS INT) where cccd.country_id is null;
+end;
+$$;
+
+call ins_fact_table();
+
+------------------
+
+--SELECT QUERIES TO QUERY TABLE DATA
+select * from COVID_DATA.STAGE.COUNTRY_DIM;
+select * from COVID_DATA.STAGE.STATE_DIM;
+select * from COVID_DATA.STAGE.WHO_DIM;
+select * from COVID_DATA.COVID_DATASET_2019.COUNTRY_DIM;
+select * from COVID_DATA.COVID_DATASET_2019.DATE_DIM;
+select * from COVID_DATA.COVID_DATASET_2019.WHO_DIM;
+select * from COVID_DATA.COVID_DATASET_2019.STATE_DIM;
+select * from COVID_DATA.COVID_DATASET_2019.cases_data_fact;
