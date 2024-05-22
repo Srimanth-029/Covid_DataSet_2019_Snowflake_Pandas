@@ -142,6 +142,16 @@ call ins_fact_table();
 
 ------------------
 
+---SET CLUSTERING KEY's for the FACT as well as for some of the main dimension tables which will be used in joins to improve the data retrieval performance as in real-time data, the data keeps on coming and we have to keep on updating and inserting the existing data.
+
+ALTER TABLE covid_data.covid_dataset_2019.cases_data_fact CLUSTER BY (Date_id,Country_id);
+ALTER TABLE DATE_DIM CLUSTER BY(DATE_ID,DATE);
+ALTER TABLE COUNTRY_DIM CLUSTER BY(COUNTRY_ID,COUNTRY_NAME);
+ALTER TABLE STATE_DIM CLUSTER BY (REGION_NAME);
+ALTER TABLE WHO_DIM CLUSTER BY (REGION_NAME);
+
+---------------
+
 --SELECT QUERIES TO QUERY TABLE DATA
 select * from COVID_DATA.STAGE.COUNTRY_DIM;
 select * from COVID_DATA.STAGE.STATE_DIM;
