@@ -24,7 +24,7 @@ type = 'csv'
 create or replace stage covid_data
 file_format = 'covid_data'
 
--------CREATING SNOWPIPE(**Not in use**)
+-------CREATING SNOWPIPE(**Not in use can trigger this using REST API**)
 create or replace pipe covid_data_pipe
 -- auto_ingest = TRUE
 as
