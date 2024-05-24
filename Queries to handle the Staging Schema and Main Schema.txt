@@ -42,7 +42,7 @@ BEGIN
     TRUNCATE TABLE COVID_DATA.STAGE.FILE_DATA;
 
     COPY INTO COVID_DATA.STAGE.FILE_DATA
-    FROM (SELECT $1,	$2,	$3,	$4,	TO_DATE($5,'DD-MM-YYYY'),	$6,	$7,	$8,	$9,	$10 FROM @covid_data);
+    FROM (SELECT $1,	$2,	$3,	$4,	TO_VARCHAR(TO_DATE($5,'DD-MM-YYYY'), 'YYYY-MM-DD'),	$6,	$7,	$8,	$9,	$10 FROM @covid_data);
 END;
 $$;
 
